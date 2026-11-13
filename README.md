@@ -1,0 +1,513 @@
+# PicoPod
+
+## Release packages
+
+`releases/` contains `PicoPod-Windows-x64.zip`, `PicoPod-Linux.zip`, and `source/`
+with the original firmware, manager, tests and build tools. The Windows ZIP bundles
+its runtime; Linux uses the included setup script and requires Python/Tk plus the
+system tools listed in its README. Both include firmware/metadata upload, live
+screen mirroring/control, offline preview, saved libraries, playlists and SD upload.
+Linux SD support uses lsblk and UDisks2; existing FAT32 cards are updated without
+formatting. Linux hardware integration has not been tested on a physical desktop.
+Rebuild Windows with `python -m tools.build_windows`, then collect all releases
+with `python -m tools.build_releases`. Personal libraries/audio are excluded.
+
+A first working software foundation for a Pico 1 / Pico W / Pico 2 / Pico 2 W pocket music player:
+two SSD1306 OLEDs, a rotary encoder with select, a back button, a WS2812-style LED,
+and a DFPlayer Mini. Firmware uses MicroPython; the Windows manager uses Python/Tk.
+
+## Standalone Windows download
+
+For a Windows x64 computer without Python or Codex, copy
+**`Windows/PicoPod-Windows-x64.zip`**, extract the entire folder, then double-click
+**PicoPod.exe**. Python, Tcl/Tk, packages, firmware assets and a console-hidden USB
+helper are bundled. Keep `_internal` next to the executable. Do not copy a `.venv`
+between PCs: its interpreter configuration refers to the machine that created it.
+
+The source launchers in `Windows` prefer `PicoPodPortable/PicoPod.exe` when present.
+The portable app saves its library under `userdata` beside its executable; put it
+somewhere writable such as Documents. The transfer ZIP excludes personal saved
+libraries/audio files. Add the original MP3s from their locations on the new PC.
+
+To rebuild the standalone package on Windows, install `requirements-build.txt` into
+the developer environment and run `python -m tools.build_windows`. Validate with
+`python -m tools.test_windows_bundle`; the check extracts to another folder and runs
+with Python/Codex removed from PATH and Python environment variables cleared.
+
+## Device Settings menu
+
+Open **Settings** from the PicoPod home menu. Rotate to choose, Select to enter or
+save, and Back to cancel an uncommitted choice. Preferences save on the Pico in
+`settings.json`, independently of the song library and firmware Python files.
+
+- **Main display:** auto-off after 10, 15, 30, 45, 60 or 120 seconds, or Never;
+  brightness from 1–100% via the SSD1306 contrast register.
+- **Secondary:** enable/disable, the same auto-off choices including Never, and
+  independent 1–100% brightness. Intentionally disabling it suppresses its missing
+  display error code. It defaults to enabled and always on.
+- **Boot volume:** 0–30. This changes the next startup volume without changing
+  the volume of a song currently playing.
+- **Sleep:** Off or 1–60 minutes from when the value is saved. It is a session
+  countdown, not an inactivity timer, and resets to Off on the next boot.
+- **Status LED:** turns the healthy steady light on/off; all error flash codes
+  remain enabled.
+- **Reboot / Power off:** require a second confirmation. Reboot mutes/stops and
+  resets the DFPlayer, blanks the screens/LEDs and resets the Pico. Power off and
+  sleep expiry mute/stop audio, send DFPlayer standby, blank both screens/LEDs,
+  disable encoder interrupts/UART and leave the application in sleep until a
+  power cycle or hardware reset. Normal controls and USB commands cannot resume it.
+
+**Physical limitation:** this is software standby, not supply disconnection.
+With USB/VSYS and DFPlayer VCC wired directly to the supply, software cannot make
+either board draw zero current or guarantee a clone honors standby. Real power
+cutoff for both boards requires a hardware power switch/load-switch/latching circuit.
+If you choose Power off, physically unplug/reconnect before firmware updates.
+
+Preferences and menu edits were exercised on MicroPython; live menu navigation was
+checked on the connected Pico. The stop/mute/standby/reset order has automated tests.
+A real timed power-off was not triggered during development because it would require
+the user to power-cycle the device afterward.
+
+## Faster FAT32 updates
+
+**Upload everything…** now analyzes existing FAT32 cards instead of clearing them.
+It hashes the managed audio files, reuses verified unchanged files, renames matching
+audio if its numbered location changed, and copies only new/changed audio. It creates
+the required folders when needed, including migration between legacy `/mp3` and the
+large numbered-folder layout. The confirmation lists reuse/rename/copy/removal counts.
+Obsolete files are removed only from the app's managed numeric audio layout;
+unrelated files are preserved. An existing FAT32 card is not reformatted.
+
+Card identity/content changes after analysis are rejected. New copies are verified
+and metadata is published after the required audio/catalog files are present. An
+ordinary transfer error rolls back pending renames/replacements; if rollback cannot
+finish, backups are preserved in a `.picopod-update-…` folder and the error is shown.
+Power loss/removing the card mid-update can still require recovery/resync. Safe
+incremental updates need free room for new files while retaining old backups; the
+app reports insufficient space instead of automatically erasing the card.
+
+Non-FAT32 cards retain the explicit erase/format confirmation and identity-checked
+Windows formatting helper. The actual card has not been modified to test this
+change; incremental reuse, renames, migration, deletion scope and rollback were
+verified using temporary folders.
+
+## Built-in LED and display idle behavior
+
+The Pico's built-in LED turns on during startup and stays solid when healthy unless
+the Settings preference disables that steady indication.
+Nonblocking fault patterns are:
+
+| Condition | Built-in LED |
+|---|---|
+| Main display unavailable | One 100ms flash every 2 seconds |
+| Secondary display unavailable | Two 100ms flashes every 2 seconds |
+| Other error (audio, library or fatal software fault) | Continuous fast on/off blinking |
+
+If faults overlap, main display status takes priority, then secondary, then other
+errors. OLEDs reconnect independently every two seconds and their LED fault clears
+when communication recovers. A missing main display no longer prevents the control
+loop or the secondary screen from running; the PC can still view/control the virtual
+framebuffers with an explicit display-error status. Fatal software errors continue
+blinking and are logged; Ctrl-C returns to the USB REPL for diagnostics.
+
+By default, after **30 seconds without control interaction**, the main OLED receives its actual
+display-off command. The secondary screen and playback keep running. Encoder turns,
+button presses and explicit PC control commands wake the main display and restart
+the timer, while still performing their normal action. Live-preview heartbeats and
+automatic song changes do not reset the timer. Change it in **Settings → Main display**.
+The PC previews match the physical panels: **yellow main display, white secondary**.
+Live view shows the main display blank while it is asleep.
+
+## Up to 25,000 songs
+
+The PC export/upload flow supports **25,000 songs**, subject to the card's free
+space and the Pico's metadata flash budget. The documented folder command uses
+folders **01–99**, with files **001.mp3–255.mp3** in each (99 × 255 = 25,245
+addressable files). This build deliberately stops at 25,000; it does not rely on
+folder 100. Logical song 255 maps to `01/255.mp3`, song 256 to `02/001.mp3`, and
+song 25,000 to `99/010.mp3`.
+
+Small existing libraries keep their `/mp3/NNNN.mp3` layout and remain compatible.
+When the small JSON format would exceed its budget or 3,000 IDs, export automatically
+uses a version-2 manifest plus a compressed `catalog-<id>.bin`. The Pico reads small
+pages from flash rather than loading all titles/artists into RAM. Artist and playlist
+queues are indexed on disk; shuffled queues use 16-bit IDs (50KB for 25,000 songs).
+Both library formats use the same on-device menus and controls.
+
+Install the current firmware before large uploads. **Upload everything…** handles
+the numbered folders, catalog sidecar, SHA-256 verification and Pico transfer.
+For manual metadata upload, select `library.json` from the export and keep its
+`catalog-…bin` beside it: the manager validates and uploads both automatically.
+The Pico validates the staged catalog before replacing its active manifest.
+Unreferenced generated catalog blobs are cleaned after a valid boot.
+
+Capacity checks run again immediately before card preparation. They include FAT32
+allocation overhead, compressed metadata limits, and space to stage the new catalog
+without deleting the active one first. Errors occur before erasing the card if the
+library cannot safely fit. For this Pico 1 build the indexed catalog is capped at
+1.2MB; unusually long metadata can also exceed its per-page RAM budget. The 32GB
+DFPlayer card limit still applies: 25,000 long/high-bitrate songs may not fit.
+
+An actual Pico 1 passed a metadata-only 25,000-song navigation, folder-address and
+full-shuffle test (241,896-byte test catalog, about 55KB player RAM). Shuffle took
+about four seconds and now displays `Shuffling…`. This proves the software's scale
+and packet addressing; 25,000 physical audio files have not been tested on your
+particular DFPlayer clone, so hardware compatibility at that scale is not promised.
+
+## Checking crackle/popping
+
+The driver sends no routine UART commands during steady playback after startup.
+A regression test checks 1,000 idle polls without extra transmissions. Volume is
+sent at initialization or when you change it, not on every animation frame.
+
+In **Live PicoPod**, enable **Quiet audio test** while a song plays. It pauses OLED
+transfers, pixel streaming and periodic state logs while playback continues. UART
+controls still work on demand. Unchecking it, closing live view, or losing the PC
+connection restores normal updates automatically. If noise changes with this test,
+digital switching/ground coupling is a suspect; it does not identify a broken wire
+or prove the analog output is clean.
+
+Your current earphones use DAC_L/DAC_R/GND and the DFPlayer uses Pico 3V3. The module
+accepts 3.2–5V, so 3.3V alone is not proof of a fault. Compare with stable 5V on the
+DFPlayer VCC (USB VBUS pin 40 for a suitable USB-powered test), keeping displays at
+3.3V and all grounds common. Check short, firm breadboard connections and the 1kΩ
+series resistor from GP0 to DFPlayer RX. If needed, compare the DAC output through
+a headphone amplifier or powered speaker to check whether the earphone load is
+contributing. Noise during playback still needs listening/power/wiring tests; it
+has not been ruled out by software tests.
+
+For a GUI-only launch, double-click **Launch PicoPod.vbs** (or **Preview PicoPod.vbs**
+for the offline demo). These use `pythonw.exe`, so no terminal window is created.
+The old `.cmd` launchers now detach and exit immediately, but can briefly flash a
+console; use the `.vbs` launchers to avoid that entirely. GUI startup/callback errors
+appear in a dialog and are saved to `userdata/startup.log`.
+
+## Saved library and playlist editor
+
+**Do not upload `userdata/library-state.json` to the Pico.** That is the PC save,
+including original file paths and stable song identities. Use **Upload everything…**
+or select `library.json` from an exported card. Both PC and device now validate
+numbered track IDs and playlists before activating metadata. A rejected device
+library leaves the menus available with an upload message and records the reason.
+Transfers compact JSON before applying the 48KB limit, so indentation or Windows
+line endings do not unnecessarily use the Pico's metadata budget.
+
+The manager automatically restores songs and playlists on startup and saves after
+each addition, removal and playlist edit. State lives in
+`userdata/library-state.json` beside the app, with a last-good `library-state.bak`
+backup. Writes are flushed and atomically replaced. Another open window cannot
+silently overwrite newer saved changes. Damaged state is recovered from the backup
+when possible; if neither copy is valid, the files are preserved and an explicit
+warning disables autosave instead of overwriting them with an empty library.
+
+Click **Playlists** to create or rename a playlist, select songs from the library,
+add them, move them up/down in playback order, or remove them. Deleting a playlist
+leaves its songs in the main library. Removing a song from the library also removes
+its playlist memberships, without deleting the original audio file. All changes
+save immediately. Stable saved song identities are translated into the current
+DFPlayer track numbers at export, so playlist membership survives renumbering.
+
+Both **Export only** and **Upload everything…** include the playlists in their
+matching `library.json`. After upload, open **Playlists** on the Pico. The firmware
+already supports playlist order, Shuffle all, and automatic playlist looping.
+**Offline preview** uses your current songs and playlists rather than the demo
+whenever your PC library is nonempty. Live view continues to show what is currently
+uploaded to the Pico; editing the PC library alone does not change the device.
+
+Normal additions remember the original MP3 locations rather than making extra
+copies. Keep those files where they are; unavailable originals stay listed as
+**Missing file** and uploading fails before any card erase. Keep the `userdata`
+folder with this app. The existing connected card export was migrated once into
+`userdata/recovered-music`, preserving seven songs locally for the new saved PC
+library, without changing the card. Future additions and all playlists now autosave.
+
+## Live PC view and controls
+
+Reopen **Launch PicoPod.cmd**, select the Pico's COM port and click **Live PicoPod**.
+The two previews mirror the actual device framebuffers over USB (about six updates
+per second), including its real fonts, cursor, activity bars and current song. Controls
+provide rotation, Select, Back, previous/next, play/pause and volume. Physical controls
+continue working and sound stays on the PicoPod's audio output, not the PC.
+
+The new firmware is installed on the connected Pico. For another board, use
+**Install firmware** first. Live view reports a missing/outdated/nonresponsive Pico
+without interrupting it or entering the REPL. Close other COM-port apps such as
+Thonny. Closing live view leaves playback running; a short stream lease also expires
+automatically if the PC app disappears. Transfer actions close live view to release
+the serial port. **Offline preview** remains available without hardware.
+
+The menus show three small animated activity bars in the upper-right corner while
+playing, with title text kept clear of them. The bottom wave has been removed.
+The bars are decorative; DFPlayer does not provide audio samples over UART.
+
+## Upload everything — Windows
+
+1. Add the original MP3s from your PC in the manager.
+2. Connect the Pico by USB and insert a **64MB–32GB microSD** into a **PC card reader**.
+   The volume must already be named exactly **PICOPOD**. A card inside the DFPlayer
+   is not accessible to the PC through the Pico USB connector.
+3. Select the Pico's COM port, then click **Upload everything…**.
+4. The app checks the card and Pico, stages the songs on the PC and prepares their
+   matching metadata before it presents an update/erase confirmation. Review the drive,
+   capacity and disk identity. **Choosing No leaves the card unchanged.**
+5. Choosing Yes performs the displayed plan. **FAT32 cards use incremental sync**
+   without an erase or format. Other filesystems are erased and quick-formatted as
+   FAT32 after confirmation. New copies are SHA-256 verified and the matching
+   library is uploaded to the Pico. Windows asks for administrator permission only
+   when the non-FAT32 preparation helper is required.
+6. Wait for **Upload complete**, safely eject the card, power off PicoPod, put the
+   card into the DFPlayer and power up. Songs and titles now use the same mapping.
+
+Automatic card preparation accepts exactly one removable PICOPOD volume on USB/SD/MMC,
+with a reliable volume/disk identity, one partition and a physical disk no larger
+than 32GB. System/boot disks and fixed disks are refused. Identity is checked again
+inside the elevated helper and before copying. Writes use the confirmed volume GUID
+instead of a potentially reused drive letter. Source MP3s on the card being erased
+are refused: copy originals to the PC first. Extra/damaged partitions and readers
+which report fixed disks require preparing a supported card outside this workflow.
+
+Missing cards, duplicate PICOPOD labels, changed/unplugged readers, source-file
+errors, insufficient space, refused UAC, format failures, copy/hash failures and Pico
+connection errors are reported. An interrupted update or format can leave an incomplete
+card; it does not imply the old contents were restored. Metadata is uploaded only
+after all song copies pass verification. If the final Pico upload fails, the log
+explains how to retry **Upload library.json** from the already-prepared card.
+
+**Validation:** the actual card was inspected and the helper's `Validate` mode ran
+without formatting. Erase/format failure paths and pipeline ordering have automated
+tests, while copying and hashing are exercised in temporary folders. No real card
+was erased by these tests. The original user-confirmed format attempt exposed a
+result-file permission/race error; the helper now updates a normal-user-created
+status file in place, preserves its ACL, and the app waits for the actual elevated
+process to exit before reading. The exact elevated handoff has passed in read-only
+`Validate` mode. Small per-operation diagnostics remain in `userdata/card-jobs`;
+there is no elevated temporary-directory cleanup to mask the operation's result.
+Live mirroring and navigation were tested on the physical Pico.
+
+## Original Pico 1 support
+
+The default firmware supports the original non-wireless **Pico 1 (RP2040)** at its
+normal clock speed. Install the MicroPython build for **RPI_PICO**, not a Pico W
+or Pico 2 build. No Wi-Fi or Pico 2-specific hardware is required. USB music
+metadata upload, both OLEDs, the encoder, buttons and the external addressable LED
+use the same GPIO assignments in `firmware/config.py` on all supported boards.
+If your existing wiring differs, update that file before installing firmware.
+
+The DFPlayer performs audio decoding, so the Pico handles only the interface and
+playback commands. The firmware targets 25 FPS; actual speed must be checked on
+the wired Pico 1. Its two OLED framebuffers total just 1,536 bytes. Menu rows are
+cached between frames and I2C transfer buffers are reused to reduce allocations.
+The 48KB metadata limit is enforced by both the manager and firmware. RAM limits
+for larger libraries are a stronger reason to consider Pico 2 than audio playback
+speed. There is no need to switch boards for this initial feature set.
+
+The firmware is now installed on the physical Pico 1 with both displays confirmed.
+UART parsing and playback loop transitions are tested on MicroPython itself. A
+bytearray-deletion incompatibility was reproduced and fixed after startup and
+end-of-song crashes. A full power-cycle and real end-of-song acceptance test
+remain for the user. Installing via the manager uploads the updated local files.
+
+## Try it on Windows
+
+Double-click **Preview PicoPod.cmd** for an interactive screen preview. The local
+`.venv` is already created in this workspace. On another PC, install Python 3.12+
+with Tcl/Tk and run these commands in PowerShell in this project folder:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m manager.preview
+.\.venv\Scripts\python.exe -m manager.app
+```
+
+The preview uses the actual firmware menu and playback state code. It simulates
+audio and UART commands; the desktop font approximates the OLED's 8×8 font.
+Use Left/Right, Enter, and Escape, or the on-screen buttons. Demo tracks are names
+and durations only; no music files are included.
+
+## What works
+
+- Songs → Shuffle all or choose a song. Playback follows the visible song order.
+- Now playing: previous, next, play/pause, volume, loop (all / one / off).
+- Select volume to edit it, rotate to adjust 0–30, select again or Back to leave.
+- Back returns to the list and preserves its selection; playback continues.
+- The smaller screen always shows the current title, elapsed/total time and progress.
+- Animated menu selection, scrolling long titles, activity bars and breathing LED.
+- Artists are generated from song metadata. The PC playlist editor exports ordered
+  queues for playlist navigation on the device.
+- The Pico manages queues, shuffle and repeats. It uses file command `0x12` for
+  `/mp3/0001.mp3`, rather than relying on filesystem copy-order track indices.
+- UART checksum validation, receive resynchronisation, paced commands, volume
+  coalescing, debounced buttons and interrupt-driven quadrature decoding.
+- Responsive startup waits for a real SD track-count reply before enabling audio,
+  with a six-second cold-start allowance and repeated probes if the module is slow.
+  Menus remain usable while the footer says `Audio starting` or `Check SD / UART`.
+- UART parsing is tested directly on MicroPython: unlike CPython, MicroPython
+  bytearrays do not support item deletion. The parser uses an index and compacts
+  once after parsing, including on track-completion and boot-reply packets.
+- USB debug logs include scanned I2C addresses, commands/responses, playback state,
+  BUSY input and free memory. Exceptions leave the MicroPython REPL available.
+  The latest exception is also saved as `last_error.log`. Display-transfer errors
+  trigger independent reconnect attempts rather than stopping the playback loop. Fatal errors
+  show `PicoPod stopped` on the main screen when that screen is still reachable.
+
+## Wiring — read before connecting power
+
+**Use the printed signal names on your module. The numerical pinout supplied in
+the original request does not match the standard DFRobot DFPlayer Mini.**
+Confirm the actual module and orientation before wiring. All GP numbers below
+are GPIO numbers, not Pico physical header pin numbers.
+
+| Part / signal | Pico connection | Notes |
+|---|---|---|
+| 128×64 OLED SDA / SCL | GP6 / GP7 | I2C1, default address 0x3C; confirmed on user's board |
+| 128×32 OLED SDA / SCL | GP4 / GP5 | I2C0, default address 0x3C; confirmed on user's board |
+| Both OLED VCC / GND | 3V3 / GND | Requires 3.3V-compatible SSD1306 boards; pull-ups must go to 3.3V |
+| DFPlayer RX | GP0 → 1kΩ → RX | Pico UART0 TX |
+| DFPlayer TX | GP1 | Pico UART0 RX; confirm 3.3V logic on your module |
+| DFPlayer BUSY | GP2 | LOW while playing; never feed a 5V signal into a Pico GPIO |
+| Encoder A / B (CLK / DT) | GP10 / GP11 | Bare contacts to GND, internal pull-ups |
+| Encoder select (SW) | GP12 | Other contact to GND |
+| Back button | GP13 | Other contact to GND |
+| Addressable LED data in | GP16 | Defaults to WS2812-compatible RGB; check your exact LED |
+| All grounds | Common GND | Pico, displays, DFPlayer, LED and audio electronics |
+
+Separate I2C buses let both OLEDs use the same address. If either OLED is SH1106
+or another controller, it needs a different driver. Edit `firmware/config.py`
+for addresses, reversed encoder direction, transitions per detent, LED enable
+and debug output.
+
+The display bus assignments were updated after identifying the physical big screen
+on GP6/GP7. The main menu can run without the small screen; its absence is logged
+over USB. Connect the small screen to GP4/GP5 to restore the always-on display.
+Both displays now respond on the physical Pico 1. The small display was confirmed
+clear with page-by-page addressing at 100kHz, which is now its configured mode;
+the large display retains horizontal addressing at 400kHz. The small progress bar
+leaves two blank rows below it because the test border clipped at the bottom.
+Small-screen updates send only changed pages, at most one per UI frame, so its
+slower bus does not block the large menu for a complete 512-byte transfer. A large
+small-screen content change settles over several frames. The small bus remains
+at its confirmed 100kHz and the main bus remains at 400kHz.
+
+Power the DFPlayer from a suitable stable supply within its verified voltage
+range. Do not power its speaker amplifier from the Pico's 3V3 output. A 5V supply
+and local decoupling are typical; sizing depends on the speaker and volume.
+Connect a passive speaker **between SPK1 and SPK2**, never either output to ground.
+For headphones use a suitable headphone amplifier fed by DAC_L / DAC_R and GND;
+do not connect headphones to the speaker outputs.
+
+An addressable 5mm LED's protocol and supply voltage need confirming. A 5V
+WS2812 can require a 3.3V-to-5V data level shifter; disable the LED in config until
+its wiring is confirmed. An encoder breakout must not pull GPIO signals up to 5V.
+
+Portable battery power, charging/protection, power switch, enclosure and headphone
+amplifier are hardware work still to do. Do not connect a bare lithium cell to
+the 3V3 pin. Choose the power circuit after confirming your exact board and audio load.
+
+## First hardware setup
+
+1. Install the official MicroPython UF2 for **your exact Pico 1, Pico W, Pico 2 or Pico 2 W**.
+   Hold BOOTSEL while plugging in and copy the UF2 to RPI-RP2/RP2350. PicoPod's
+   manager expects a MicroPython USB serial COM port, not the BOOTSEL drive.
+2. Wire with power disconnected using the table above. Insert a FAT32 microSD in
+   the DFPlayer. DFRobot specifies FAT16/FAT32 and cards up to 32GB; use a small
+   known-good FAT32 card for initial testing.
+3. Open **Launch PicoPod.cmd**. Refresh ports, select the Pico's COM port, then
+   **Install firmware**. This replaces the Python files with the same names on
+   the Pico. Close Thonny / other serial monitors during transfers.
+4. Add MP3s in the manager. It reads ID3 title/artist and audio duration. Untagged
+   files use the original filename as title. Other audio formats need conversion
+   to MP3 externally in this first version; this app does not transcode.
+5. For the manual workflow, select **Export only** and choose the root of a clean FAT32 card or
+   an empty staging folder. Export creates `mp3/0001.mp3`, `0002.mp3`, etc. and
+   a matching `library.json`. A staging folder's `mp3` directory and manifest must
+   then be copied to the card root. **Export only** never formats or erases a drive;
+   the separate **Upload everything…** workflow erases only after confirmation,
+   preserving FAT32 if it is already present and formatting only when necessary.
+6. Select **Upload library.json**, choosing the manifest from that export.
+   The manifest is copied to the Pico under a temporary name and renamed before
+   reset. It carries original titles, artists, durations and numbered track IDs.
+7. Safely eject the card, install it in the DFPlayer with power off, then power up.
+   Startup waits for SD discovery. Open Songs and select a track.
+
+**Music bytes go to the DFPlayer card through a card reader. Metadata goes to the
+Pico over USB.** The Pico USB connector cannot write the separate DFPlayer SD card
+through UART. The DFPlayer USB pins and clone USB behaviour need separate hardware
+verification before adding any card-reader/pass-through feature.
+
+Export refuses an occupied `mp3` folder or an existing `library.json`. Make a fresh
+export for library changes, keeping card contents and Pico manifest together. Old
+exports should be backed up and removed manually only when you intend to replace
+them. Interrupted copies leave files on disk and do not publish a final manifest.
+Do not simply add/delete numbered files without rebuilding their metadata mapping.
+
+## Limits and expected accuracy
+
+- This is a software implementation tested on the PC, **not verified on physical
+  hardware yet**. Clone DFPlayers can differ in command handling, completion events,
+  autoplay and startup timing. First verify one MP3, pause/resume and BUSY transitions.
+- DFPlayer does not return an elapsed playback position. Progress is a local
+  monotonic estimate using imported duration; it freezes while paused and resets
+  when changing tracks. Decoder start latency and clock drift mean it is not
+  sample-accurate. Seeking and playback-position recovery after power loss are absent.
+- End-of-track uses DFPlayer `0x3D` events with a debounced BUSY fallback, not
+  metadata duration. Stale events are ignored for the first second of a new command;
+  subsecond clips are outside this music-oriented implementation.
+- Firmware reports a missing BUSY/playback start after eight seconds; check audio,
+  track ID, card, UART and BUSY wiring when this occurs. Errors stop the software
+  queue and appear on the main display and in USB logs. Back still works.
+- Both displays use an 8×8 ASCII font. Unicode metadata remains in JSON; characters
+  outside ASCII display as `?` until a larger font system is added.
+- Legacy JSON uses IDs 1–3000 and a 48KB metadata limit. Larger libraries use the
+  indexed format with up to 25,000 logical song IDs and a small manifest; the
+  compressed sidecar is bounded separately by flash capacity and page RAM.
+- No Wi-Fi uploading, battery gauge,
+  equaliser UI, seek or album art in this version.
+  Export order sets numbered file IDs; saved playlists follow their song identities.
+
+## Playlist metadata (advanced/manual)
+
+Use the **Playlists** editor for normal use; artists are derived automatically.
+For manual metadata editing, add a `playlists` array to
+the exported `library.json` before uploading it (keep a copy beside the card):
+
+```json
+"playlists": [
+  {"name": "Pocket mix", "tracks": [1, 3, 2]}
+]
+```
+
+IDs refer to that export, not original file names. Playlists auto-loop by default
+and have Shuffle all at the top. Loop can be changed while playing. The preview
+includes a demo playlist. You can also preview a real export:
+
+```powershell
+.\.venv\Scripts\python.exe -m manager.preview --library E:\library.json
+```
+
+## Debug and validation
+
+Set `DEBUG = True` in config, then reinstall firmware. Observe USB output in
+Thonny or via `python -m mpremote connect COM5 repl` with the manager disconnected.
+Ctrl-C stops firmware; Ctrl-D restarts it. A missing display produces a readable
+exception rather than silently using a wrong address. Use separate I2C scan logs
+to diagnose identical-address displays.
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+Tests cover queue navigation, pause/resume timing, repeat and shuffle, BUSY
+completion and missing-playback errors, playlist/artist queues, frame boundaries,
+UART checksum/noise/partial packets, command pacing, and non-overwriting export.
+Hardware acceptance: verify encoder direction, each button, correct title/audio
+mapping, both screens, volume limits, pause and resume, automatic next/repeat,
+card removal, power stability and a full track's progress drift.
+
+## References
+
+- [DFRobot DFPlayer specifications and pin map](https://wiki.dfrobot.com/dfr0299)
+- [DFRobot filename and copy-order guidance](https://wiki.dfrobot.com/dfr0299/docs/20906)
+- [DFRobot command implementation](https://github.com/DFRobot/DFRobotDFPlayerMini/blob/master/DFRobotDFPlayerMini.cpp)
+- [MicroPython RP2 hardware APIs](https://docs.micropython.org/en/latest/rp2/quickref.html)
+- [Official MicroPython downloads](https://micropython.org/download/)
